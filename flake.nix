@@ -1,5 +1,5 @@
 {
-  description = "Python echo server docker image";
+  description = "React app docker image";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -11,48 +11,55 @@
   in {
     packages.${system} = {
       default = pkgs.dockerTools.buildImage {
-        name = "echo-server";
+        name = "react-app";
         tag = "latest";
         
         copyToRoot = pkgs.buildEnv {
           name = "image-root";
-          paths = [ pkgs.python3 ];
+          paths = [ pkgs.bun ];
         };
 
         config = {
           Cmd = [
-            "${pkgs.python3}/bin/python" "-c" ''
-              import socket
-              import logging
-              import sys
-
-              # Configure logging
-              logging.basicConfig(
-                  level=logging.INFO,
-                  format='%(asctime)s - %(levelname)s - %(message)s',
-                  stream=sys.stdout
-              )
-
-              server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-              server.bind(('0.0.0.0', 8080))
-              server.listen(1)
-              logging.info("Server started on port 8080")
-
-              while True:
-                  conn, addr = server.accept()
-                  logging.info(f"New connection from {addr}")
-                  data = conn.recv(1024)
-                  logging.info(f"Received: {data.decode().strip()}")
-                  conn.send(data)
-                  logging.info(f"Sent response back to {addr}")
-                  conn.close()
-                  logging.info(f"Connection closed with {addr}")
-            ''
+            "${pkgs.bun}/bin/bun" "run" "build"
           ];
           ExposedPorts = {
-            "8080/tcp" = {};
+            "5173/tcp" = {};
           };
+          WorkingDir = "/app";
         };
+        
+        runAsRoot = ''
+          #!${pkgs.runtimeShell}
+          mkdir -p /app
+          cp -r ${pkgs.buildEnv {
+            name = "app-source";
+            paths = [
+              (pkgs.runCommand "app-source" {} ''
+                mkdir -p $out
+                cp -r ${./package.json} $out/package.json
+                cp -r ${./.} $out/
+              '')
+            ];
+          }}/* /app/
+          
+          # Pre-download dependencies using Nix instead of trying to download during build
+          cd /app
+          cp -r ${pkgs.buildEnv {
+            name = "node-modules";
+            paths = [
+              (pkgs.runCommand "node-modules" {
+                buildInputs = [ pkgs.bun ];
+              } ''
+                mkdir -p $out/node_modules
+                cp ${./package.json} ./package.json
+                export HOME=$(pwd)
+                bun install --no-progress
+                cp -r node_modules/* $out/node_modules/
+              '')
+            ];
+          }}/node_modules /app/
+        '';
       };
     };
     apps.${system} = {
@@ -63,16 +70,7 @@
           set -e
           image_path=$(nix build .#default --print-out-paths --no-link)
           ${pkgs.docker}/bin/docker load < $image_path
-          ${pkgs.docker}/bin/docker run -d -p 8080:8080 echo-server:latest
-        '');
-      };
-      demo = {
-        type = "app";
-        program = toString (pkgs.writeScript "demo" ''
-          #!${pkgs.bash}/bin/bash
-          set -e
-          echo "Sending test message 'Hello Echo Server!'"
-          echo "Hello Echo Server!" | ${pkgs.netcat}/bin/nc localhost 8080
+          ${pkgs.docker}/bin/docker run -d -p 5173:5173 react-app:latest
         '');
       };
       destroy = {
@@ -81,8 +79,8 @@
           #!${pkgs.bash}/bin/bash
           set -e
           echo "Cleaning up containers..."
-          ${pkgs.docker}/bin/docker stop $(${pkgs.docker}/bin/docker ps -q --filter ancestor=echo-server:latest) || true
-          ${pkgs.docker}/bin/docker rm $(${pkgs.docker}/bin/docker ps -a -q --filter ancestor=echo-server:latest) || true
+          ${pkgs.docker}/bin/docker stop $(${pkgs.docker}/bin/docker ps -q --filter ancestor=react-app:latest) || true
+          ${pkgs.docker}/bin/docker rm $(${pkgs.docker}/bin/docker ps -a -q --filter ancestor=react-app:latest) || true
           echo "Cleanup complete"
         '');
       };
